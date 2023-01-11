@@ -1,6 +1,5 @@
 import os
 import rasterio
-#from rasterio.io import MemoryFile
 import warnings
 import numpy as np
 from imagepacker.utils import AABB
@@ -19,9 +18,7 @@ def load_obj(obj_path, _info=print):
         'mtl_filenames': [],
         'materials': {},
     }
-    vertices = []
     uvs = []
-    normals = []
 
     faces = {}
     current_material = "_"
@@ -35,14 +32,14 @@ def load_obj(obj_path, _info=print):
                 mtl_file = "".join(line.split()[1:]).strip()
                 obj['materials'].update(load_mtl(mtl_file, obj_base_path, _info=_info))
                 obj['mtl_filenames'].append(mtl_file)
-            elif line.startswith("v "):
-                # Vertices
-                vertices.append(list(map(float, line.split()[1:4])))
+            # elif line.startswith("v "):
+            #     # Vertices
+            #     vertices.append(list(map(float, line.split()[1:4])))
             elif line.startswith("vt "):
                 # UVs
                 uvs.append(list(map(float, line.split()[1:3])))
-            elif line.startswith("vn "):
-                normals.append(list(map(float, line.split()[1:4])))
+            # elif line.startswith("vn "):
+            #     normals.append(list(map(float, line.split()[1:4])))
             elif line.startswith("usemtl "):
                 mtl_name = "".join(line.split()[1:]).strip()
                 if not mtl_name in obj['materials']:
@@ -54,22 +51,12 @@ def load_obj(obj_path, _info=print):
                     faces[current_material] = []
 
                 a,b,c = line.split()[1:]
+                at = int(a.split("/")[1])
+                bt = int(b.split("/")[1])
+                ct = int(c.split("/")[1])
+                faces[current_material].append((at - 1, bt - 1, ct - 1)) 
 
-                if a.count("/") == 2:
-                    av, at, an = map(int, a.split("/")[0:3])
-                    bv, bt, bn = map(int, b.split("/")[0:3])
-                    cv, ct, cn = map(int, c.split("/")[0:3])
-
-                    faces[current_material].append((av - 1, bv - 1, cv - 1, at - 1, bt - 1, ct - 1, an - 1, bn - 1, cn - 1)) 
-                else:
-                    av, at = map(int, a.split("/")[0:2])
-                    bv, bt = map(int, b.split("/")[0:2])
-                    cv, ct = map(int, c.split("/")[0:2])
-                    faces[current_material].append((av - 1, bv - 1, cv - 1, at - 1, bt - 1, ct - 1)) 
-
-    obj['vertices'] = np.array(vertices, dtype=np.float32)
     obj['uvs'] = np.array(uvs, dtype=np.float32)
-    obj['normals'] = np.array(normals, dtype=np.float32)
     obj['faces'] = faces
 
     return obj
@@ -97,8 +84,7 @@ def load_mtl(mtl_file, obj_base_path, _info=print):
     return mats
 
 
-def write_obj_changes(obj_file, mtl_file, uv_changes, single_mat, output_dir):
-    
+def write_obj_changes(obj_file, mtl_file, uv_changes, single_mat, output_dir, _info=print):
     with open(obj_file) as f:
         obj_lines = f.readlines()
     
@@ -108,6 +94,8 @@ def write_obj_changes(obj_file, mtl_file, uv_changes, single_mat, output_dir):
 
     printed_mtllib = False
     printed_usemtl = False
+
+    _info("Transforming UV coordinates")
 
     for line_idx, line in enumerate(obj_lines):
         if line.startswith("mtllib"):
@@ -144,42 +132,18 @@ def write_obj_changes(obj_file, mtl_file, uv_changes, single_mat, output_dir):
         else:
             out_lines.append(line)
 
-    with open(os.path.join(output_dir, os.path.basename(obj_file)), 'w') as f:
+    out_file = os.path.join(output_dir, os.path.basename(obj_file))
+    _info("Writing %s" % out_file)
+
+    with open(out_file, 'w') as f:
         f.writelines(out_lines)
 
-    # # Apply changes
-    # for mat in uv_changes:
-    #     changes = uv_changes[mat]
-    #     faces = obj['faces'][mat]
-    #     for f in faces:
-    #         for uv_idx in f[3:6]:
-    #             obj['uvs'][uv_idx][0] = obj['uvs'][uv_idx][0] * changes["aspect"][0] + changes["offset"][0]
-    #             obj['uvs'][uv_idx][1] = obj['uvs'][uv_idx][1] * changes["aspect"][1] + changes["offset"][1]
-                
-    # with open(os.path.join(output_dir, obj['filename']), 'w') as f:
-    #     f.write("mtllib %s\n" % mtl_file)
-    #     for v in obj['vertices']:
-    #         f.write("v %s %s %s\n" % (v[0], v[1], v[2]))
-    #     for vt in obj['uvs']:
-    #         f.write("vt %s %s\n" % (vt[0], vt[1]))
-    #     for vn in obj['normals']:
-    #         f.write("vn %s %s %s\n" % (vn[0], vn[1], vn[2]))
-        
-    #     f.write("usemtl %s\n" % single_mat)
-    #     for mat in obj['faces']:
-    #         print(mat)
-    #         for face in obj['faces'][mat]:
-    #             v = [i + 1 for i in face[0:3]]
-    #             vt = [i + 1 for i in face[3:6]]
-    #             vn = [i + 1 for i in face[6:9]]
-    #             out = zip(v, vt) if not vn else zip(v, vt, vn)
-    #             f.write("f %s\n" % " ".join(["/".join(map(str, t)) for t in out]))
-
-def write_output_tex(img, profile, path):
+def write_output_tex(img, profile, path, _info=print):
     _, h, w = img.shape
     profile['width'] = w
     profile['height'] = h
 
+    _info("Writing %s (%sx%s pixels)" % (path, w, h))
     with rasterio.open(path, 'w', **profile) as dst:
         for b in range(1, img.shape[0] + 1):
             dst.write(img[b - 1], b)
@@ -214,11 +178,11 @@ def write_output_mtl(src_mtl, mat_file, dst_mtl):
 
     return single_mat
 
-def obj_pack(obj_file, output_dir=None):
+def obj_pack(obj_file, output_dir=None, _info=print):
     if not output_dir:
         output_dir = os.path.join(os.path.dirname(os.path.abspath(obj_file)), "packed")
     
-    obj = load_obj(obj_file)
+    obj = load_obj(obj_file, _info=_info)
     if not obj['mtl_filenames']:
         raise Exception("No MTL files found, nothing to do")
 
@@ -226,28 +190,30 @@ def obj_pack(obj_file, output_dir=None):
         raise Exception("This will overwrite %s. Choose a different output directory" % obj_file)
         
     # Compute AABB for UVs
+    _info("Computing texture bounds")
     extents = {}
     for material in obj['materials']:
         bounds = AABB()
 
         faces = obj['faces'][material]
         for f in faces:
-            for uv_idx in f[3:6]:
+            for uv_idx in f:
                 uv = obj['uvs'][uv_idx]
                 bounds.add(uv[0], uv[1])
 
         extents[material] = bounds
     
+    _info("Binary packing...")
     output_image, uv_changes, profile = pack(obj, extents=extents)
     mtl_file = obj['mtl_filenames'][0]
     mat_file = os.path.basename(obj['materials'][next(iter(obj['materials']))])
     
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
-
-    write_output_tex(output_image, profile, os.path.join(output_dir, mat_file))
+    
+    write_output_tex(output_image, profile, os.path.join(output_dir, mat_file), _info=_info)
     single_mat = write_output_mtl(os.path.join(obj['root_dir'], mtl_file), mat_file, os.path.join(output_dir, mtl_file))
-    write_obj_changes(obj_file, mtl_file, uv_changes, single_mat, output_dir)
+    write_obj_changes(obj_file, mtl_file, uv_changes, single_mat, output_dir, _info=_info)
 
 if __name__ == '__main__':
     import argparse
