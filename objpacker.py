@@ -14,6 +14,9 @@ def load_obj(obj_path, _info=print):
 
     obj_base_path = os.path.dirname(os.path.abspath(obj_path))
     obj = {
+        'filename': os.path.basename(obj_path),
+        'root_dir': os.path.dirname(os.path.abspath(obj_path)),
+        'mtl_filenames': [],
         'materials': {},
     }
     vertices = []
@@ -31,6 +34,7 @@ def load_obj(obj_path, _info=print):
                 # Materials
                 mtl_file = "".join(line.split()[1:]).strip()
                 obj['materials'].update(load_mtl(mtl_file, obj_base_path, _info=_info))
+                obj['mtl_filenames'].append(mtl_file)
             elif line.startswith("v "):
                 # Vertices
                 vertices.append(list(map(float, line.split()[1:4])))
@@ -90,27 +94,137 @@ def load_mtl(mtl_file, obj_base_path, _info=print):
                     raise IOError("Cannot open %s" % map_kd)
 
                 mats[current_mtl] = map_kd
-
-                # TODO: remove
-                #_info("Loading %s" % map_kd_filename)
-                # with MemoryFile() as memfile:
-                #     with rasterio.open(map_kd, 'r') as src:
-                #         data = src.read()
-                #         with memfile.open(driver='JPEG', jpeg_quality=90, count=3, width=src.width, height=src.height, dtype=rasterio.dtypes.uint8) as dst:
-                #             for b in range(1, min(3, src.count) + 1):
-                #                 # TODO: convert if uint16 or float
-                #                 dst.write(data[b - 1], b)
-                #     memfile.seek(0)
-                #     mats[current_mtl] = memfile.read()
     return mats
 
+
+def write_obj_changes(obj_file, mtl_file, uv_changes, single_mat, output_dir):
+    
+    with open(obj_file) as f:
+        obj_lines = f.readlines()
+    
+    out_lines = []
+    uv_lines = []
+    current_material = None
+
+    printed_mtllib = False
+    printed_usemtl = False
+
+    for line_idx, line in enumerate(obj_lines):
+        if line.startswith("mtllib"):
+            if not printed_mtllib:
+                out_lines.append("mtllib %s\n" % mtl_file)
+                printed_mtllib = True
+            else:
+                out_lines.append("# \n")
+        elif line.startswith("usemtl"):
+            if not printed_usemtl:
+                out_lines.append("usemtl %s\n" % single_mat)
+                printed_usemtl = True
+            else:
+                out_lines.append("# \n")
+            current_material = line[7:].strip()
+        elif line.startswith("vt"):
+            uv_lines.append(line_idx)
+            out_lines.append(line)
+        elif line.startswith("f"):
+            for v in line[2:].split():
+                parts = v.split("/")
+                if len(parts) >= 2 and parts[1]:
+                    uv_idx = int(parts[1]) - 1 # uv indexes start from 1
+                    uv_line_idx = uv_lines[uv_idx]
+                    uv_line = obj_lines[uv_line_idx][3:]
+                    uv = [float(uv.strip()) for uv in uv_line.split()]
+
+                    if current_material and current_material in uv_changes:
+                        changes = uv_changes[current_material]
+                        uv[0] = uv[0] * changes["aspect"][0] + changes["offset"][0]
+                        uv[1] = uv[1] * changes["aspect"][1] + changes["offset"][1]
+                        out_lines[uv_line_idx] = "vt %s %s\n" % (uv[0], uv[1])
+            out_lines.append(line)
+        else:
+            out_lines.append(line)
+
+    with open(os.path.join(output_dir, os.path.basename(obj_file)), 'w') as f:
+        f.writelines(out_lines)
+
+    # # Apply changes
+    # for mat in uv_changes:
+    #     changes = uv_changes[mat]
+    #     faces = obj['faces'][mat]
+    #     for f in faces:
+    #         for uv_idx in f[3:6]:
+    #             obj['uvs'][uv_idx][0] = obj['uvs'][uv_idx][0] * changes["aspect"][0] + changes["offset"][0]
+    #             obj['uvs'][uv_idx][1] = obj['uvs'][uv_idx][1] * changes["aspect"][1] + changes["offset"][1]
+                
+    # with open(os.path.join(output_dir, obj['filename']), 'w') as f:
+    #     f.write("mtllib %s\n" % mtl_file)
+    #     for v in obj['vertices']:
+    #         f.write("v %s %s %s\n" % (v[0], v[1], v[2]))
+    #     for vt in obj['uvs']:
+    #         f.write("vt %s %s\n" % (vt[0], vt[1]))
+    #     for vn in obj['normals']:
+    #         f.write("vn %s %s %s\n" % (vn[0], vn[1], vn[2]))
+        
+    #     f.write("usemtl %s\n" % single_mat)
+    #     for mat in obj['faces']:
+    #         print(mat)
+    #         for face in obj['faces'][mat]:
+    #             v = [i + 1 for i in face[0:3]]
+    #             vt = [i + 1 for i in face[3:6]]
+    #             vn = [i + 1 for i in face[6:9]]
+    #             out = zip(v, vt) if not vn else zip(v, vt, vn)
+    #             f.write("f %s\n" % " ".join(["/".join(map(str, t)) for t in out]))
+
+def write_output_tex(img, profile, path):
+    _, h, w = img.shape
+    profile['width'] = w
+    profile['height'] = h
+
+    with rasterio.open(path, 'w', **profile) as dst:
+        for b in range(1, img.shape[0] + 1):
+            dst.write(img[b - 1], b)
+
+    sidecar = path + '.aux.xml'
+    if os.path.isfile(sidecar):
+        os.unlink(sidecar)
+
+def write_output_mtl(src_mtl, mat_file, dst_mtl):
+    with open(src_mtl, 'r') as src:
+        lines = src.readlines()
+
+    out = []
+    found_map = False
+    single_mat = None
+
+    for l in lines:
+        if l.startswith("newmtl"):
+            single_mat = "".join(l.split()[1:]).strip()
+            out.append(l)
+        elif l.startswith("map_Kd"):
+            out.append("map_Kd %s\n" % mat_file)
+            break
+        else:
+            out.append(l)
+    
+    with open(dst_mtl, 'w') as dst:
+        dst.write("".join(out))
+
+    if single_mat is None:
+        raise Exception("Could not find material name in file")
+
+    return single_mat
 
 def obj_pack(obj_file, output_dir=None):
     if not output_dir:
         output_dir = os.path.join(os.path.dirname(os.path.abspath(obj_file)), "packed")
     
     obj = load_obj(obj_file)
+    if not obj['mtl_filenames']:
+        raise Exception("No MTL files found, nothing to do")
 
+    if os.path.abspath(obj_file) == os.path.abspath(os.path.join(output_dir, os.path.basename(obj_file))):
+        raise Exception("This will overwrite %s. Choose a different output directory" % obj_file)
+        
     # Compute AABB for UVs
     extents = {}
     for material in obj['materials']:
@@ -125,14 +239,15 @@ def obj_pack(obj_file, output_dir=None):
         extents[material] = bounds
     
     output_image, uv_changes, profile = pack(obj, extents=extents)
-    # _, h, w = output_image.shape
-    # profile['width'] = w
-    # profile['height'] = h
-    # with rasterio.open(obj_file + "_testout.png", 'w', **profile) as dst:
-    #     for b in range(1, output_image.shape[0] + 1):
-    #         dst.write(output_image[b - 1], b)
-    # exit(1)
+    mtl_file = obj['mtl_filenames'][0]
+    mat_file = os.path.basename(obj['materials'][next(iter(obj['materials']))])
+    
+    if not os.path.isdir(output_dir):
+        os.mkdir(output_dir)
 
+    write_output_tex(output_image, profile, os.path.join(output_dir, mat_file))
+    single_mat = write_output_mtl(os.path.join(obj['root_dir'], mtl_file), mat_file, os.path.join(output_dir, mtl_file))
+    write_obj_changes(obj_file, mtl_file, uv_changes, single_mat, output_dir)
 
 if __name__ == '__main__':
     import argparse

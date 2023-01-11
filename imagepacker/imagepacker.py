@@ -203,7 +203,7 @@ def pack(obj, background=(0,0,0,0), format="PNG", extents=None):
         _, h, w = image.shape
 
         # using filename so we can pass back UV info without storing it in image
-        blocks.append(Block(w, h, data=(filename, changes)))
+        blocks.append(Block(w, h, data=(filename, mat, changes)))
 
     # sort by width, descending (widest first)
     blocks.sort(key=lambda block: -block.w)
@@ -216,11 +216,11 @@ def pack(obj, background=(0,0,0,0), format="PNG", extents=None):
 
     uv_changes = {}
     for block in blocks:
-        fname, changes = block.data
+        fname, mat, changes = block.data
         image = image_name_map[fname]
         _, im_h, im_w = image.shape
 
-        uv_changes[fname] = {
+        uv_changes[mat] = {
             "offset": (
                 # should be in [0, 1] range
                 (block.x - (changes[0] if changes else 0))/output_image.shape[2],
